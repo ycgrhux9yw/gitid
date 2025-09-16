@@ -7,6 +7,8 @@ import (
 	"strings"
 )
 
+var nicknameCache = make(map[string]string)
+
 func encodeEmail(email string) string {
 	return strings.ReplaceAll(strings.ReplaceAll(email, "@", "_at_"), ".", "_dot_")
 }
@@ -14,17 +16,30 @@ func encodeEmail(email string) string {
 func setNickname(email, nickname string) error {
 	section := encodeEmail(email)
 	nicknameCmd := fmt.Sprintf("identity.%s.nickname", section)
-	return exec.Command("git", "config", "--global", nicknameCmd, nickname).Run()
+	err := exec.Command("git", "config", "--global", nicknameCmd, nickname).Run()
+	if err == nil {
+		// Update cache
+		nicknameCache[email] = nickname
+	}
+	return err
 }
 
 func getNickname(email string) string {
+	// Check cache first
+	if cached, exists := nicknameCache[email]; exists {
+		return cached
+	}
+
 	section := encodeEmail(email)
 	nicknameCmd := fmt.Sprintf("identity.%s.nickname", section)
 	out, err := exec.Command("git", "config", "--global", nicknameCmd).Output()
 	if err != nil {
+		nicknameCache[email] = ""
 		return ""
 	}
-	return strings.TrimSpace(string(out))
+	nickname := strings.TrimSpace(string(out))
+	nicknameCache[email] = nickname
+	return nickname
 }
 
 func hasNickname(email string) bool {
@@ -171,5 +186,102 @@ func deleteIdentity(email string) error {
 	}
 	exec.Command("git", "config", "--global", "--unset", nicknameCmd).Run()
 
+	// Clear from cache
+	delete(nicknameCache, email)
+
 	return nil
+}
+
+func setLocalIdentity(name, email string) error {
+	// Check if we're inside a git repository
+	if err := exec.Command("git", "rev-parse", "--is-inside-work-tree").Run(); err != nil {
+		return fmt.Errorf("not inside a git repository: cannot set local identity")
+	}
+
+	if err := exec.Command("git", "config", "--local", "user.name", name).Run(); err != nil {
+		return fmt.Errorf("error setting local user name: %w", err)
+	}
+	if err := exec.Command("git", "config", "--local", "user.email", email).Run(); err != nil {
+		return fmt.Errorf("error setting local user email: %w", err)
+	}
+	return nil
+}
+
+func setLocalIdentityByIdentifier(identifier string) error {
+	identity, found := findIdentityByIdentifier(identifier)
+	if !found {
+		return fmt.Errorf("identity not found: %s", identifier)
+	}
+
+	return setLocalIdentity(identity.Name, identity.Email)
+}
+
+func addLocalIdentity(name, email, nickname string) error {
+	// First add to global identities if not exists
+	section := encodeEmail(email)
+	nameCmd := fmt.Sprintf("identity.%s.name", section)
+
+	// Check if identity already exists globally
+	_, err := exec.Command("git", "config", "--global", nameCmd).Output()
+	if err != nil {
+		// Identity doesn't exist globally, add it
+		if err := addIdentity(name, email, nickname); err != nil {
+			return fmt.Errorf("error adding identity globally: %w", err)
+		}
+	}
+
+	// Set as local identity
+	return setLocalIdentity(name, email)
+}
+
+func getCurrentLocalIdentity() (string, string, error) {
+	nameOut, err := exec.Command("git", "config", "--local", "user.name").Output()
+	if err != nil {
+		return "", "", fmt.Errorf("no local git identity configured")
+	}
+	emailOut, err := exec.Command("git", "config", "--local", "user.email").Output()
+	if err != nil {
+		return "", "", fmt.Errorf("no local git identity configured")
+	}
+
+	name := strings.TrimSpace(string(nameOut))
+	email := strings.TrimSpace(string(emailOut))
+	return name, email, nil
+}
+
+func isInGitRepository() bool {
+	err := exec.Command("git", "rev-parse", "--is-inside-work-tree").Run()
+	return err == nil
+}
+
+func unsetLocalIdentity() error {
+	if !isInGitRepository() {
+		return fmt.Errorf("not in a git repository")
+	}
+	if err := exec.Command("git", "config", "--local", "--unset", "user.name").Run(); err != nil {
+		return err
+	}
+	return exec.Command("git", "config", "--local", "--unset", "user.email").Run()
+}
+
+func hasLocalIdentity() bool {
+	if !isInGitRepository() {
+		return false
+	}
+
+	// Check if local config actually has user.name and user.email set
+	// (not just falling back to global)
+	nameOut, err := exec.Command("git", "config", "--local", "user.name").Output()
+	if err != nil {
+		return false
+	}
+	emailOut, err := exec.Command("git", "config", "--local", "user.email").Output()
+	if err != nil {
+		return false
+	}
+
+	name := strings.TrimSpace(string(nameOut))
+	email := strings.TrimSpace(string(emailOut))
+
+	return name != "" && email != ""
 }
