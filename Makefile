@@ -42,6 +42,10 @@ clean:
 test:
 	$(GOTEST) -v ./...
 
+# run tests with race detector enabled
+test-race:
+	$(GOTEST) -race -v ./...
+
 release: clean
 	mkdir -p $(RELEASE_DIR) $(BUILD_DIR)
 	# Build for each platform/architecture
